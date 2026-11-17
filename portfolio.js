@@ -165,3 +165,191 @@
   const startAnother = pmResetForNextChild;
   pmResetForNextChild = function () { startAnother(); clearCloudSave(); };
 })();
+
+/* Final interaction layer: profile selection, ordered unlocks and playable skill games. */
+(() => {
+  const profileStoreKey = 'petitMindProfilesV1';
+  const readProfiles = () => { try { return JSON.parse(localStorage.getItem(profileStoreKey) || '{}'); } catch { return {}; } };
+  let profiles = readProfiles(), activeProfile = null, activePlayerName = '', profileCloud = null, profileCloudUser = null;
+  const baseSaveForProfile = saveV2;
+  saveV2 = function () {
+    baseSaveForProfile();
+    if (activeProfile) {
+      profiles[activeProfile] = { playerName: activePlayerName, state: JSON.parse(JSON.stringify(state)), updatedAt: Date.now() };
+      localStorage.setItem(profileStoreKey, JSON.stringify(profiles));
+      if (profileCloud && profileCloudUser) profileCloud.from('petit_saves').upsert({ owner_id: profileCloudUser, profile_id: activeProfile, state, updated_at: new Date().toISOString() }, { onConflict: 'owner_id,profile_id' }).then(({ error }) => { if (error) console.info('Cloud profile save unavailable.', error); });
+    }
+  };
+  const profileScreen = document.getElementById('titleScreen');
+  if (profileScreen) {
+    const legacy = (() => { try { return JSON.parse(localStorage.getItem('petitMindSave') || 'null'); } catch { return null; } })();
+    profileScreen.querySelector('.title-box').innerHTML = '<canvas class="title-pet" width="24" height="28"></canvas><div class="title-mark">PETIT MIND<br>쁘띠의 성장일기</div><div class="title-caption">사용자 아이디와 이름을 입력하면 이전 이야기를 이어갈 수 있어요.</div><form id="profileForm" class="profile-form"><label>사용자 아이디<input id="playerId" maxlength="32" autocomplete="username" required placeholder="예: petit123"></label><label>사용자 이름<input id="playerName" maxlength="20" autocomplete="name" required placeholder="이름"></label><button class="title-btn" type="submit">▶ 시작하기</button></form><div class="title-hint">같은 브라우저에서 동일한 아이디로 이어하기</div>';
+    paintPixelPet(profileScreen.querySelector('canvas'), '🐣', 0, null);
+    profileScreen.querySelector('#profileForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const id = profileScreen.querySelector('#playerId').value.trim().toLocaleLowerCase();
+      const player = profileScreen.querySelector('#playerName').value.trim();
+      if (!id || !player) return;
+      activeProfile = id; activePlayerName = player;
+      profiles = readProfiles();
+      const saved = profiles[id];
+      if (saved?.state) state = saved.state;
+      else if (legacy?.species && !Object.keys(profiles).length) state = legacy;
+      else state = { name:'',species:null,kind:null,age:0,days:0,gameHours:0,lastTick:Date.now(),energy:50,stats:{int:0,virtue:0,social:0,body:0},logs:[],ending:null,unlockedGames:['patience'],unlockedThroughAge:0,lowCareHours:0,highCareHours:0,recommendationCount:0,lastReference:{} };
+      state.playerId = id; state.playerName = player;
+      localStorage.setItem('petitMindActiveProfile', id);
+      try {
+        const cfg = window.PETIT_SUPABASE || {};
+        if (cfg.url && cfg.anonKey && window.supabase?.createClient) {
+          const client = window.supabase.createClient(cfg.url, cfg.anonKey);
+          let { data: { session } } = await client.auth.getSession();
+          if (!session) ({ data: { session } } = await client.auth.signInAnonymously());
+          const owner = session?.user?.id;
+          if (owner) {
+            profileCloud = client; profileCloudUser = owner;
+            const { data: remote } = await client.from('petit_saves').select('state,updated_at').eq('owner_id', owner).eq('profile_id', id).maybeSingle();
+            if (remote?.state && (!saved || Date.parse(remote.updated_at || 0) > (saved.updatedAt || 0))) state = remote.state;
+          }
+        }
+      } catch (error) { console.info('Cloud profile unavailable; using this browser save.', error); }
+      state.playerId = id; state.playerName = player;
+      profileScreen.remove();
+      saveV2(); drawV2(); pmRefreshHud();
+      if (!state.species) { pmAllowCancelSetup = false; setupPet(); }
+    });
+    const lastId = localStorage.getItem('petitMindActiveProfile');
+    if (lastId && profiles[lastId]) { profileScreen.querySelector('#playerId').value = lastId; profileScreen.querySelector('#playerName').value = profiles[lastId].playerName || ''; }
+  }
+
+  // Restore the correct profile before subsequent saves, without deleting profile history on a new pet.
+  const baseResetChild = pmResetForNextChild;
+  pmResetForNextChild = function () {
+    const keepId = activeProfile, keepName = activePlayerName;
+    baseResetChild(); activeProfile = keepId; activePlayerName = keepName;
+    if (state) { state.playerId = keepId; state.playerName = keepName; saveV2(); }
+  };
+  const priorSetupScreen = setupPet;
+  setupPet = function () {
+    priorSetupScreen();
+    const cancel = document.getElementById('setupCancel');
+    if (!pmAllowCancelSetup) cancel?.remove();
+    const start = document.getElementById('closeGame'), priorClick = start.onclick;
+    start.onclick = function (...args) { priorClick?.apply(this, args); if (state.species) document.getElementById('setupCancel')?.remove(); };
+  };
+  const resetButton = document.getElementById('reset');
+  if (resetButton) resetButton.onclick = () => {
+    if (!confirm('현재 쁘띠의 성장 기록을 초기화하고 새 쁘띠를 선택할까요? 사용자 아이디와 이름, 다른 아이디의 기록은 보존됩니다.')) return;
+    pmAllowCancelSetup = true;
+    state = { name:'',species:null,kind:null,age:0,days:0,gameHours:0,lastTick:Date.now(),energy:50,stats:{int:0,virtue:0,social:0,body:0},logs:[],ending:null,unlockedGames:['patience'],unlockedThroughAge:0,lowCareHours:0,highCareHours:0,recommendationCount:0,lastReference:{},activityPlays:0,playsToday:0,activityUses:{},lastGameRuns:0,careerReady:false,occupation:null,unemployed:false,diaryMemo:'',playerId:activeProfile,playerName:activePlayerName};
+    saveV2(); document.querySelector('.app').style.display=''; document.getElementById('overlay').classList.remove('show'); document.getElementById('endingScreen')?.classList.remove('show'); document.getElementById('deathScreen')?.classList.remove('show'); setupPet();
+  };
+
+  // Robust rename modal; bind in capture phase because earlier inline scripts replace onclick.
+  document.getElementById('rename')?.addEventListener('click', e => {
+    e.preventDefault(); e.stopImmediatePropagation();
+    let page = document.getElementById('nameScreen');
+    if (!page) { pmOpenNameScreen(); page = document.getElementById('nameScreen'); }
+    const input = page.querySelector('#petNameInput'); input.value = state.name || ''; page.classList.add('show'); input.focus(); input.select();
+  }, true);
+
+  const storyPacks = {
+    mediate:[
+      ['두 친구가 같은 공을 쓰고 싶어 해요.',['각자 원하는 시간을 말하고 순서를 정하자','한 친구에게 양보하라고 해','공을 숨겨서 다툼을 끝내']],
+      ['모둠 발표 역할을 두고 의견이 갈렸어요.',['각자 잘하고 싶은 역할을 말한 뒤 나눠 보자','목소리가 큰 친구가 정하게 하자','발표를 취소하자']],
+      ['친구가 농담을 듣고 속상해 보여요.',['어떤 점이 속상했는지 먼저 들어보자','예민하다고 말해','다른 친구에게 대신 해결해 달라 하자']],
+      ['놀이 규칙을 서로 다르게 기억해요.',['각자 기억을 듣고 모두 동의할 규칙을 다시 정하자','내 기억이 맞다고 우겨','놀이를 그만두자']],
+      ['단체 채팅에서 오해가 커지고 있어요.',['당사자에게 차분히 확인하고 말할 기회를 주자','모두에게 한쪽 편을 들라고 하자','대화를 캡처해 놀리자']],
+      ['친구 둘이 함께 앉을 자리를 양보하지 않아요.',['서로 이유를 듣고 가능한 자리를 같이 찾아보자','한 명을 억지로 밀어내','모른 척 지나가자']]
+    ],
+    norms:[
+      ['도서관에서 통화가 걸려 왔어요.',['밖으로 나가 조용히 통화한다','큰 소리로 바로 받는다','책상 위에 스피커폰을 켠다']],
+      ['버스에 어르신이 서 계세요.',['괜찮으신지 여쭙고 자리를 안내한다','아무 말 없이 가방을 자리에 둔다','큰 소리로 자리를 비키라고 한다']],
+      ['친구 집에 초대받았어요.',['인사하고 신발과 방문 예절을 확인한다','허락 없이 방을 뒤진다','음식만 먹고 인사 없이 간다']],
+      ['급식 줄에 늦게 도착했어요.',['뒤에 차례대로 선다','친구 앞에 끼어든다','다른 줄을 밀어 바꾼다']],
+      ['영화관에서 장면이 조용해졌어요.',['휴대전화 소리를 끄고 조용히 본다','큰 소리로 이야기를 한다','앞좌석을 발로 찬다']],
+      ['공원에서 반려견이 다른 사람에게 다가가요.',['목줄을 잡고 상대가 괜찮은지 확인한다','반려견을 혼자 두고 간다','상대가 알아서 피하라 한다']]
+    ],
+    reframe:[
+      ['발표에서 말을 조금 더듬었어요.',['다음에 더 편하게 말할 방법을 연습해 볼 수 있어','나는 항상 실패해','다시는 발표하지 않을래']],
+      ['친구가 약속을 갑자기 취소했어요.',['무슨 일이 있었는지 확인하고 다른 날을 정해 보자','나를 싫어한다고 단정하자','친구에게 똑같이 복수하자']],
+      ['시험 점수가 기대보다 낮았어요.',['어려웠던 부분을 찾아 다음 계획에 반영하자','나는 아무것도 못한다고 생각하자','시험지를 버리고 잊자']],
+      ['그림 공모전에서 상을 받지 못했어요.',['내가 좋아하는 표현과 배운 점을 살펴보자','재능이 없다고 결론 내리자','다른 참가자를 탓하자']],
+      ['운동 경기에서 실수했어요.',['팀과 다시 맞춰볼 연습을 정하자','팀이 진 건 전부 내 탓이라며 포기하자','팀원을 비난하자']],
+      ['새 모임에서 먼저 말을 걸지 못했어요.',['다음에는 인사 한마디부터 시도해 보자','모두가 나를 싫어한다고 단정하자','다시는 모임에 가지 말자']]
+    ],
+    discovery:[
+      ['종이비행기가 오른쪽으로만 휘어요.',['접는 날개 각도를 조금씩 바꿔 비교한다','더 세게 던지기만 반복한다','관찰 없이 종이를 버린다']],
+      ['씨앗 두 개가 다른 속도로 자라요.',['물과 빛 조건을 기록해 비교한다','하나만 보고 결론 낸다','매일 화분을 바꾼다']],
+      ['탑이 한쪽으로 자꾸 쓰러져요.',['밑면 넓이와 블록 위치를 바꿔 시험한다','더 높은 곳에 빨리 쌓는다','친구 탓을 한다']],
+      ['종이 다리가 가운데서 내려앉아요.',['접는 모양을 달리해 무게를 다시 시험한다','종이를 더 구겨 던진다','시험을 멈춘다']],
+      ['퍼즐의 마지막 조각이 맞지 않아요.',['색과 모서리 특징을 나눠 살펴본다','아무 곳에나 세게 누른다','정답을 바로 포기한다']],
+      ['물에 뜨는 재료와 가라앉는 재료가 있어요.',['재료별 결과를 표로 적어 공통점을 찾아본다','한 번 본 결과로 모두 판단한다','기록을 지운다']]
+    ],
+    crisis:[
+      ['복도에서 연기 냄새가 나요.',['안전한 곳으로 이동해 어른과 119에 알린다','연기를 따라가 원인을 찾는다','엘리베이터를 탄다']],
+      ['친구가 넘어져 크게 아파해요.',['주변 어른을 부르고 움직이지 않게 돕는다','혼자 일으켜 세운다','사진부터 찍는다']],
+      ['낯선 사람이 집 주소를 물어요.',['대답하지 않고 안전한 어른에게 알린다','주소를 자세히 알려준다','혼자 따라간다']],
+      ['비상벨이 울리고 대피 안내가 나와요.',['안내를 따라 침착하게 대피한다','짐을 챙기러 되돌아간다','사람을 밀치며 뛴다']],
+      ['길에서 다친 동물을 발견했어요.',['차도에서 떨어져 어른이나 구조기관에 알린다','맨손으로 급히 안아 든다','위험한 차도로 들어간다']],
+      ['친구가 물에 빠져 도움을 요청해요.',['물에 뛰어들지 말고 어른과 구조대에 즉시 알린다','혼자 물에 뛰어든다','멀리서 구경한다']]
+    ]
+  };
+  for (const [id, scenarios] of Object.entries(storyPacks)) gameStory[id] = scenarios.map(([q, options], i) => [q, options[0], options, i]);
+  const originalStart = startGame;
+  const openActivity = id => { const a = activities.find(x => x.id === id); if (!a || state.energy < 7) { if (a) toast('컨디션이 부족해요. 쉬어 주세요.'); return null; } openModal(a, ''); document.getElementById('closeGame').textContent='계속하기'; return a; };
+  const finishChoice = (a, ok, text) => { finish(a, ok); document.getElementById('result').textContent = text; };
+  function pixelFace(area, emotion) {
+    const face = document.createElement('div'); face.className='pixel-face'; face.setAttribute('aria-label','픽셀 표정');
+    const eyes = emotion === 'sad' ? '╲  ╱' : emotion === 'angry' ? '⌜  ⌝' : '●  ●';
+    face.innerHTML=`<span class="face-hair">▟ ▄ ▄ ▙</span><b>${eyes}</b><i>${emotion==='happy'?'◡':emotion==='sad'?'︵':emotion==='surprised'?'○':'▰'}</i>`; area.append(face);
+  }
+  startGame = function (id) {
+    const a = activities.find(x => x.id === id); if (!a) return originalStart(id);
+    if (id === 'confidence') {
+      const q = [['식물은 햇빛을 이용해 자랄 수 있어요.','맞다'],['모든 새는 날 수 있어요.','아니다'],['얼음은 물이 얼어 만들어져요.','맞다'],['물고기는 아가미로 숨을 쉬어요.','맞다'],['달은 스스로 빛을 내요.','아니다'],['모든 포유류는 알을 낳아요.','아니다'],['지구는 태양 주위를 돌아요.','맞다'],['거미는 곤충이에요.','아니다'],['소리는 진공에서 잘 전달돼요.','아니다'],['소금은 물에 녹을 수 있어요.','맞다'],['박쥐는 포유류예요.','맞다'],['번개가 친 뒤 천둥 소리가 들릴 수 있어요.','맞다']][Math.random()*12|0];
+      const game=openActivity(id); if(!game)return; const area=document.getElementById('gameArea'); area.innerHTML=`<p>${q[0]}</p><div class="game-buttons"><button class="choice" data-v="맞다">맞다</button><button class="choice" data-v="아니다">아니다</button></div>`; area.querySelectorAll('button').forEach(b=>b.onclick=()=>finishChoice(game,b.dataset.v===q[1],b.dataset.v===q[1]?'생각을 확인했어요!':'답을 돌아보며 새로운 사실을 익혔어요.')); return;
+    }
+    if (storyPacks[id]) {
+      const game=openActivity(id); if(!game)return; const scenes=storyPacks[id], entry=scenes[Math.random()*scenes.length|0], opts=entry[1].map((v,i)=>({v,i})).sort(()=>Math.random()-.5), area=document.getElementById('gameArea'); area.innerHTML=`<p>${entry[0]}</p><div class="game-buttons">${opts.map(x=>`<button class="choice" data-i="${x.i}">${x.v}</button>`).join('')}</div>`; area.querySelectorAll('button').forEach(b=>b.onclick=()=>finishChoice(game,+b.dataset.i===0,+b.dataset.i===0?'상대와 상황을 살피는 선택이에요.':'다른 관점도 생각해 보고 다시 시도해요.')); return;
+    }
+    if (id === 'balance') {
+      const game=openActivity(id); if(!game)return; const area=document.getElementById('gameArea'); area.innerHTML='<p>← → 또는 마우스로 판을 기울여 공을 가운데에 3초 유지해요.</p><canvas id="balanceCanvas" width="420" height="210"></canvas><p id="balanceStatus">중앙에 공을 모아 보세요</p>';
+      const c=area.querySelector('canvas'),ctx=c.getContext('2d'),status=area.querySelector('#balanceStatus'); let x=210,y=80,vx=0,vy=0,tilt=0,centered=0,last=performance.now(),done=false;
+      const end=ok=>{if(done)return;done=true;finishChoice(game,ok,ok?'균형을 유지했어요!':'공이 판 밖으로 나갔어요. 다음에 다시 도전해요.')}; c.onpointermove=e=>{const r=c.getBoundingClientRect();tilt=((e.clientX-r.left)/r.width-.5)*2}; window.addEventListener('keydown',function key(e){if(done)return;if(['ArrowLeft','a','A'].includes(e.key))tilt=-1;if(['ArrowRight','d','D'].includes(e.key))tilt=1}); const frame=now=>{if(done)return;let dt=Math.min(.04,(now-last)/1000);last=now;vx+=tilt*130*dt;vx*=.985;vy+=45*dt; x+=vx*dt;y+=vy*dt;if(y>150){vy=-vy*.8;y=150}if(y<55){y=55;vy=Math.abs(vy)}centered=Math.abs(x-210)<24?centered+dt:0;ctx.clearRect(0,0,420,210);ctx.fillStyle='#324764';ctx.fillRect(35,60,350,110);ctx.strokeStyle='#f3d17b';ctx.lineWidth=4;ctx.strokeRect(35,60,350,110);ctx.fillStyle='#9bca91';ctx.fillRect(190,65,40,100);ctx.fillStyle='#ffd46f';ctx.beginPath();ctx.arc(x,y,10,0,Math.PI*2);ctx.fill();status.textContent=centered>=3?'중앙을 지켰어요!':`가운데까지 ${Math.max(0,3-centered).toFixed(1)}초`;if(centered>=3)end(true);else if(x<40||x>380)end(false);else requestAnimationFrame(frame)};requestAnimationFrame(frame);return;
+    }
+    if (id === 'reaction') {
+      const game=openActivity(id); if(!game)return; const area=document.getElementById('gameArea'); area.innerHTML='<p id="reactionText">검정/빨강일 때는 기다려요. 초록색이 되면 바로 클릭!</p><button id="reactionPad" class="reaction-pad">기다려요</button><p id="reactionCount">초록 신호를 놓치지 마세요</p>'; const pad=area.querySelector('#reactionPad'),label=area.querySelector('#reactionCount');let pulse=0,done=false,timer;const schedule=()=>{pad.classList.remove('green');pad.textContent=pulse%2?'🔴 기다려요':'⚫ 기다려요';timer=setTimeout(()=>{if(done)return;pulse++;pad.classList.add('green');pad.textContent='🟢 지금!';label.textContent='초록색일 때 클릭!';timer=setTimeout(()=>{pad.classList.remove('green');pad.textContent='놓쳤어요 · 다시 기다려요';label.textContent='3~5초 뒤 다시 초록색이 와요';if(pulse>=3){done=true;finishChoice(game,false,'신호를 놓쳤어요. 반응 연습을 완료했어요.')}else schedule()},320)} ,2200+Math.random()*2800)};pad.onclick=()=>{if(done)return;if(pad.classList.contains('green')){done=true;clearTimeout(timer);finishChoice(game,true,'초록 신호에 빠르게 반응했어요!')}else{label.textContent='아직 기다릴 때예요. 초록색 신호를 기다려요.'}};schedule();return;
+    }
+    if (id === 'sports') {
+      const game=openActivity(id);if(!game)return;const area=document.getElementById('gameArea');area.innerHTML='<p>빈 동료를 클릭하거나 방향키로 골라 패스해요!</p><canvas id="soccerCanvas" width="420" height="270"></canvas><p id="passStatus">빈 동료에게 패스하기</p>';const c=area.querySelector('canvas'),ctx=c.getContext('2d');let target=Math.random()<.5?1:2,done=false;const players=[{x:210,y:205},{x:110,y:105},{x:310,y:105},{x:210,y:70}];const draw=()=>{ctx.fillStyle='#4b8b62';ctx.fillRect(0,0,420,270);ctx.strokeStyle='#d6efc9';ctx.lineWidth=3;ctx.strokeRect(10,10,400,250);ctx.strokeRect(150,10,120,35);ctx.fillStyle='#e8e4d3';ctx.fillRect(180,0,60,14);players.forEach((p,i)=>{ctx.fillStyle=i===0?'#e8d36e':i===3?'#d86c68':'#75c6d4';ctx.fillRect(p.x-9,p.y-12,18,24);ctx.fillStyle='#f0cba0';ctx.fillRect(p.x-6,p.y-22,12,10);ctx.fillStyle='#fff';ctx.fillRect(p.x-5,p.y+12,4,8);ctx.fillRect(p.x+2,p.y+12,4,8)});ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(210,180,7,0,Math.PI*2);ctx.fill();ctx.fillStyle='#e9d27a';ctx.fillRect(players[target].x-20,players[target].y-32,40,3)};draw();const pass=idx=>{if(done)return;done=true;ctx.strokeStyle='#fff';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(210,180);ctx.lineTo(players[idx].x,players[idx].y);ctx.stroke();area.querySelector('#passStatus').textContent=idx===target?'빈 동료에게 정확히 패스했어요!':'수비가 막았어요. 공간을 살펴봐요.';finishChoice(game,idx===target,idx===target?'팀 동료와 패스를 연결했어요!':'패스 경로를 다시 살펴봐요.')};c.onclick=e=>{const r=c.getBoundingClientRect(),x=(e.clientX-r.left)*420/r.width,y=(e.clientY-r.top)*270/r.height;let idx=players.slice(1).map((p,i)=>({i:i+1,d:Math.hypot(p.x-x,p.y-y)})).sort((a,b)=>a.d-b.d)[0];if(idx&&idx.d<40)pass(idx.i)};window.addEventListener('keydown',e=>{if(['ArrowLeft','1'].includes(e.key))pass(1);if(['ArrowRight','2'].includes(e.key))pass(2);if(e.key==='ArrowUp')pass(3)});return;
+    }
+    if (id === 'face') {
+      const game=openActivity(id);if(!game)return;const area=document.getElementById('gameArea'),emotions=['기쁨','슬픔','놀람','화남'],keys=['happy','sad','surprised','angry'],n=Math.random()*2|0;let answer;
+      if(n===0){const scenarios=[['친구가 선물을 받고 눈을 반짝이며 웃어요.','기쁨'],['친구가 조용히 고개를 숙이고 눈물이 맺혔어요.','슬픔'],['갑자기 큰 풍선이 터져 눈이 커졌어요.','놀람'],['차례를 빼앗겨 눈썹을 찌푸리고 있어요.','화남']];const q=scenarios[Math.random()*scenarios.length|0];answer=q[1];area.innerHTML=`<p>${q[0]}</p>`}
+      else{const i=Math.random()*4|0;answer=emotions[i];pixelFace(area,keys[i]);area.insertAdjacentHTML('beforeend','<p>픽셀 얼굴의 표정은 어떤 감정일까요?</p>')}
+      const opts=[...emotions].sort(()=>Math.random()-.5);area.insertAdjacentHTML('beforeend','<div class="game-buttons">'+opts.map(x=>`<button class="choice">${x}</button>`).join('')+'</div>');area.querySelectorAll('button').forEach(b=>b.onclick=()=>finishChoice(game,b.textContent===answer,b.textContent===answer?'표정과 상황을 잘 살폈어요.':'표정은 여러 단서와 함께 살펴볼 수 있어요.'));return;
+    }
+    if (id === 'rhythm') {
+      const game=openActivity(id);if(!game)return;const area=document.getElementById('gameArea'),dirs=['←','→','↑','↓'],expected=dirs[Math.random()*4|0];area.innerHTML=`<div class="rhythm-prompt">${expected}</div><p id="rhythmTimer">3.0초 안에 같은 방향을 눌러요</p><div class="game-buttons">${dirs.map(d=>`<button class="choice rhythm-key" data-d="${d}">${d}</button>`).join('')}</div>`;let left=3,done=false;const time=area.querySelector('#rhythmTimer'),t=setInterval(()=>{left-=.1;time.textContent=`${Math.max(0,left).toFixed(1)}초`;if(left<=0&&!done){done=true;clearInterval(t);time.textContent='시간 초과 · 실패했어요';time.classList.add('rhythm-fail');finishChoice(game,false,'3초 안에 선택하지 못했어요. 다음 리듬을 준비해요.')}},100);area.querySelectorAll('.rhythm-key').forEach(b=>b.onclick=()=>{if(done)return;done=true;clearInterval(t);finishChoice(game,b.dataset.d===expected,b.dataset.d===expected?'박자에 맞춰 움직였어요!':'방향이 달랐어요. 다음 리듬을 준비해요.')});return;
+    }
+    if (id === 'memory') {
+      const old=originalStart; old(id); const area=document.getElementById('gameArea'); area.querySelectorAll('.choice').forEach(b=>{const click=b.onclick;b.onclick=function(...args){b.classList.add('memory-hit');return click?.apply(this,args)}}); return;
+    }
+    originalStart(id);
+  };
+
+  // Keep the list in unlock order and surface career choices under the growth diary at adulthood.
+  const baseDraw=drawV2;
+  drawV2=function(){baseDraw();const list=document.getElementById('activities');if(list&&state.unlockedGames){const ordered=state.unlockedGames.map(id=>list.querySelector(`[data-game="${id}"]`)).filter(Boolean);ordered.forEach(el=>list.append(el))}renderCareerSection()};
+  function renderCareerSection(){let timeline=document.getElementById('timeline');if(!timeline)return;let box=document.getElementById('careerChoices');if(!box){box=document.createElement('div');box.id='careerChoices';timeline.after(box)}if(state.age<20||state.ending||state.dead){box.replaceChildren();return}const all=recommended(),list=all.slice(0,Math.max(2,all.length-1)),heading=document.createElement('h4');heading.textContent='스무 살의 직업 선택';const hint=document.createElement('p');hint.textContent='성장 기록과 다양한 능력의 조합을 바탕으로 제안해요. 원하는 미래를 직접 골라 보세요.';box.replaceChildren(heading,hint);const row=document.createElement('div');row.className='career-row';for(const item of list){const btn=document.createElement('button');btn.className='job-pick';btn.innerHTML=`<b>${item.job[1]} ${item.job[0]}</b><small>성장 기록에 어울리는 선택지</small>`;btn.onclick=()=>finishCareer(item.job);row.append(btn)}const unemployed=document.createElement('button');unemployed.className='job-pick';unemployed.innerHTML='<b>🧍 백수로 지내기</b><small>직업을 정하지 않고 지내요</small>';unemployed.onclick=()=>{state.occupation='백수';state.unemployed=true;saveV2();drawV2();toast('백수 상태로 지내기로 했어요.')};row.append(unemployed);box.append(row)}
+
+  const baseCareerEnd=pmShowEnding;
+  pmShowEnding=function(job){baseCareerEnd(job);const page=document.getElementById('endingScreen');if(!page)return;const actions=page.querySelector('.ending-actions');actions.innerHTML='<button id="raiseAnother" class="title-btn">처음부터 키우기</button><button id="finishGame" class="title-btn secondary">끝내기</button>';page.querySelector('#raiseAnother').onclick=pmResetForNextChild;page.querySelector('#finishGame').onclick=()=>{page.querySelector('.ending-copy').textContent+=' 함께해줘서 고마워요!';page.querySelector('.ending-actions').innerHTML='<span class="title-hint">이 이야기를 마쳤어요. 브라우저 창을 닫아도 됩니다.</span>'}};
+
+  document.head.insertAdjacentHTML('beforeend',`<style>
+  .profile-form{max-width:360px;margin:20px auto 0;display:grid;gap:12px;text-align:left}.profile-form label{font-size:12px;color:#d9e5de}.profile-form input{display:block;width:100%;margin-top:5px;padding:10px;border:2px solid #f1d27c;background:#fff1c9;color:#202d43}.profile-form .title-btn{width:100%;margin-top:5px}.careerChoices,#careerChoices{margin-top:14px;padding:12px;border:2px solid #7897af;background:#17243a;color:#f6edcf}.careerChoices h4,#careerChoices h4{margin:0 0 6px;color:#ffdc7b}.career-row{display:grid;gap:7px;margin-top:10px}.career-row .job-pick{background:#344e70;color:#fff2c6;border:2px solid #f0d27e;padding:9px;text-align:left}.career-row .job-pick small{display:block;margin-top:3px;color:#d1dddc}.pixel-face{width:90px;height:94px;margin:6px auto 14px;background:#e9bd8a;border:6px solid #59425a;box-shadow:inset 0 -15px #d99882;display:flex;flex-direction:column;align-items:center;justify-content:space-around;color:#2b3048;font:18px monospace;image-rendering:pixelated}.pixel-face .face-hair{position:absolute;transform:translateY(-38px);font-size:17px;color:#5c3f42}.pixel-face i{font-style:normal;font-size:22px}.memory-hit{background:#77b885!important;color:#14243a!important;transform:translateY(2px);box-shadow:inset 0 0 0 3px #d2f09c!important}.reaction-pad{width:190px;height:110px;border:5px solid #ecd17d;background:#222;color:#fff;font-size:22px;cursor:pointer}.reaction-pad.green{background:#1abc69;color:#092b1c;box-shadow:0 0 0 7px #b8f394,0 0 28px #32ff80}.rhythm-prompt{font-size:58px;color:#ffdc7b;text-shadow:4px 4px #253750}.rhythm-fail{color:#ff9a91;font-weight:bold}.modal-foot #closeGame{margin-left:auto}.modal-foot #setupCancel{margin-right:auto}
+  </style>`);
+
+  // Save id/name and current pet independently; changing the pet resets only its active progress.
+  if (activeProfile && state) { state.playerId=activeProfile; state.playerName=activePlayerName; }
+})();
