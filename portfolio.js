@@ -212,6 +212,8 @@
           }
         }
       } catch (error) { console.info('Cloud profile unavailable; using this browser save.', error); }
+      const recordedName = saved?.playerName || state.playerName;
+      if (recordedName && recordedName !== player) { toast('이 아이디에 저장된 이름과 일치하지 않아요.'); return; }
       state.playerId = id; state.playerName = player;
       profileScreen.remove();
       saveV2(); drawV2(); pmRefreshHud();
