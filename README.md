@@ -8,7 +8,7 @@
 
 ## Supabase 설정
 
-1. Supabase 프로젝트를 만들고 Authentication에서 Anonymous Sign-Ins를 활성화합니다.
+1. 프로젝트 `fgdnhqjteoolaghuclhn`에서 Authentication의 Anonymous Sign-Ins를 활성화합니다.
 2. SQL Editor에서 [`supabase/schema.sql`](supabase/schema.sql)을 실행합니다.
 3. 프로젝트 URL과 anon/publishable key를 [`supabase-config.js`](supabase-config.js)에 입력합니다. `service_role` 키는 브라우저 코드에 넣지 않습니다.
 
@@ -16,7 +16,7 @@
 
 ## Vercel 배포
 
-GitHub 저장소를 Vercel에 연결하고 Framework Preset은 **Other**, Build Command는 비우고 Output Directory는 `.`으로 둡니다. `index.html`, `portfolio.js`, `supabase-config.js`가 같은 디렉터리에 배포되어야 합니다. Supabase 미설정으로 배포해도 게임은 로컬 저장 모드로 동작합니다.
+GitHub 저장소를 Vercel에 연결하면 이후 `main` 브랜치에 푸시할 때마다 자동 배포됩니다. Framework Preset은 **Other**, Build Command는 비우고 Output Directory는 `.`으로 둡니다. `index.html`, `portfolio.js`, `supabase-config.js`가 같은 디렉터리에 배포되어야 합니다.
 
 ## 주요 기능
 
