@@ -249,15 +249,24 @@
   const profileStoreKey = 'petitMindProfilesV1';
   window.pmMouseSensitivity = Math.min(2.5,Math.max(.25,Number(localStorage.getItem('petitMindMouseSensitivity') || 1)));
   const readProfiles = () => { try { return JSON.parse(localStorage.getItem(profileStoreKey) || '{}'); } catch { return {}; } };
-  let profiles = readProfiles(), activeProfile = null, activePlayerName = '', profileCloud = null, profileCloudUser = null;
-  const baseSaveForProfile = saveV2;
+  let profiles = readProfiles(), activeProfile = null, activePlayerName = '', profileCloud = null, profileCloudUser = null, profileCloudMode = 'legacy', profileCloudTimer = null;
   saveV2 = function () {
-    baseSaveForProfile();
+    state.lastTick=Date.now();
     if (activeProfile) {
-      profiles[activeProfile] = { playerName: activePlayerName, state: JSON.parse(JSON.stringify(state)), updatedAt: Date.now() };
+      const snapshot=JSON.parse(JSON.stringify(state));delete snapshot.__pmProfiles;
+      profiles[activeProfile] = { playerName: activePlayerName, state:snapshot, updatedAt: Date.now() };
       localStorage.setItem(profileStoreKey, JSON.stringify(profiles));
-      if (profileCloud && profileCloudUser) profileCloud.from('petit_saves').upsert({ owner_id: profileCloudUser, profile_id: activeProfile, state, updated_at: new Date().toISOString() }, { onConflict: 'owner_id,profile_id' }).then(({ error }) => { if (error) console.info('Cloud profile save unavailable.', error); });
-    }
+      localStorage.setItem('petitMindSave',JSON.stringify(snapshot));
+      if(profileCloud&&profileCloudUser){clearTimeout(profileCloudTimer);profileCloudTimer=setTimeout(async()=>{
+        const updated_at=new Date().toISOString();let response;
+        if(profileCloudMode==='profile') response=await profileCloud.from('petit_saves').upsert({owner_id:profileCloudUser,profile_id:activeProfile,state:snapshot,updated_at},{onConflict:'owner_id,profile_id'});
+        else {
+          const cloudProfiles=Object.fromEntries(Object.entries(profiles).map(([id,item])=>[id,{playerName:item.playerName,state:item.state,updatedAt:item.updatedAt}]));
+          response=await profileCloud.from('petit_saves').upsert({owner_id:profileCloudUser,state:{...snapshot,__pmProfiles:cloudProfiles},updated_at},{onConflict:'owner_id'});
+        }
+        if(response?.error)console.info('Cloud profile save failed.',response.error);
+      },350)}
+    } else localStorage.setItem('petitMindSave',JSON.stringify(state));
   };
   const profileScreen = document.getElementById('titleScreen');
   if (profileScreen) {
@@ -286,8 +295,23 @@
           const owner = session?.user?.id;
           if (owner) {
             profileCloud = client; profileCloudUser = owner;
-            const { data: remote } = await client.from('petit_saves').select('state,updated_at').eq('owner_id', owner).eq('profile_id', id).maybeSingle();
-            if (remote?.state && (!saved || Date.parse(remote.updated_at || 0) > (saved.updatedAt || 0))) state = remote.state;
+            let remote=null;
+            const byProfile=await client.from('petit_saves').select('state,updated_at').eq('owner_id',owner).eq('profile_id',id).maybeSingle();
+            if(!byProfile.error){profileCloudMode='profile';remote=byProfile.data}
+            else {
+              profileCloudMode='legacy';
+              const oldRow=await client.from('petit_saves').select('state,updated_at').eq('owner_id',owner).maybeSingle();
+              if(oldRow.error)console.info('Cloud save table is unavailable; keeping local progress.',oldRow.error);else remote=oldRow.data;
+            }
+            if(remote?.state){
+              const cloudMap=remote.state.__pmProfiles||{};
+              for(const [cloudId,item] of Object.entries(cloudMap))if(!profiles[cloudId])profiles[cloudId]=item;
+              const cloudProfile=cloudMap[id];
+              let remoteState=cloudProfile?.state||null, remoteName=cloudProfile?.playerName||'';
+              if(!remoteState&&remote.state.playerId===id){remoteState=remote.state;remoteName=remote.state.playerName||''}
+              if(!remoteState&&!Object.keys(cloudMap).length&&!Object.keys(profiles).length&&remote.state.species){remoteState=remote.state;remoteName=remote.state.playerName||''}
+              if(remoteState&&(!saved||Date.parse(remote.updated_at||0)>(saved.updatedAt||0))){state=remoteState;if(remoteName)state.playerName=remoteName}
+            }
           }
         }
       } catch (error) { console.info('Cloud profile unavailable; using this browser save.', error); }
@@ -303,11 +327,12 @@
   }
 
   // Restore the correct profile before subsequent saves, without deleting profile history on a new pet.
-  const baseResetChild = pmResetForNextChild;
   pmResetForNextChild = function () {
-    const keepId = activeProfile, keepName = activePlayerName;
-    baseResetChild(); activeProfile = keepId; activePlayerName = keepName;
-    if (state) { state.playerId = keepId; state.playerName = keepName; saveV2(); }
+    if(window.restTimer){clearInterval(window.restTimer);window.restTimer=null}
+    pmAllowCancelSetup=false;window.careerModalOpen=false;
+    document.getElementById('endingScreen')?.classList.remove('show');document.getElementById('deathScreen')?.classList.remove('show');document.getElementById('overlay').classList.remove('show');document.querySelector('.app').style.display='';
+    state={name:'',species:null,kind:null,age:0,days:0,gameHours:0,lastTick:Date.now(),energy:50,stats:{int:0,virtue:0,social:0,body:0},logs:[],ending:null,unlockedGames:['patience'],unlockedThroughAge:0,lowCareHours:0,highCareHours:0,recommendationCount:0,lastReference:{},activityPlays:0,playsToday:0,activityUses:{},lastGameRuns:0,careerReady:false,occupation:null,unemployed:false,diaryMemo:'',playerId:activeProfile,playerName:activePlayerName};
+    setupPet();
   };
   const priorSetupScreen = setupPet;
   setupPet = function () {
