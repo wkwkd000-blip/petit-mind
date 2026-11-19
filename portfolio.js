@@ -166,6 +166,83 @@
   pmResetForNextChild = function () { startAnother(); clearCloudSave(); };
 })();
 
+/* Procedural, original background music that follows the current game screen. */
+(() => {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return;
+  let audio = null, master = null, timer = null, step = 0, active = '', unlocked = false;
+  let enabled = localStorage.getItem('petitMindBgmEnabled') !== 'false';
+  const presets = {
+    main: { bpm: 82, wave: 'triangle', scale: [0,3,5,7,10,12,15,17], root: 261.63 },
+    diary: { bpm: 66, wave: 'sine', scale: [0,2,5,7,9,12,14,17], root: 220 },
+    ending: { bpm: 74, wave: 'triangle', scale: [0,4,5,7,11,12,16,17], root: 246.94 }
+  };
+  function getAudio() {
+    if (!audio) { audio = new AudioCtx(); master = audio.createGain(); master.gain.value = 0; master.connect(audio.destination); }
+    return audio;
+  }
+  function hash(text) { let n=2166136261; for (const c of text) n=Math.imul(n^c.charCodeAt(0),16777619); return n>>>0; }
+  function makePreset(key) {
+    if (presets[key]) return presets[key];
+    const seed=hash(key), roots=[196,220,246.94,261.63,293.66,329.63], scales=[[0,2,3,7,9,12,14,15],[0,2,4,7,9,12,14,16],[0,3,5,7,10,12,15,17],[0,2,5,7,9,12,14,17]];
+    return { bpm:62+(seed%43), wave:['sine','triangle','sine','triangle'][seed%4], root:roots[(seed>>>5)%roots.length], scale:scales[(seed>>>9)%scales.length], seed };
+  }
+  function stopMusic() {
+    active=''; if (timer) { clearInterval(timer); timer=null; }
+    if (audio && master) { const now=audio.currentTime; master.gain.cancelScheduledValues(now); master.gain.setTargetAtTime(0,now,.07); }
+  }
+  function playNote(preset, index, key) {
+    if (!audio || !master || audio.state!=='running' || !enabled) return;
+    const p=preset, salt=p.seed||0, pattern=[0,2,4,3,5,4,2,1,0,3,5,6,4,2,1,3];
+    let degree=(pattern[index%pattern.length]+((salt>>>((index%4)*3))&1))%p.scale.length;
+    if (key==='diary') degree=(degree+2)%p.scale.length;
+    const frequency=p.root*Math.pow(2,p.scale[degree]/12)*(index%8===4?.5:1);
+    const osc=audio.createOscillator(), gain=audio.createGain(), now=audio.currentTime;
+    osc.type=p.wave; osc.frequency.setValueAtTime(frequency,now);
+    gain.gain.setValueAtTime(.0001,now); gain.gain.exponentialRampToValueAtTime(key.startsWith('game:')?.018:.025,now+.035); gain.gain.exponentialRampToValueAtTime(.0001,now+.42);
+    osc.connect(gain); gain.connect(master); osc.start(now); osc.stop(now+.45);
+  }
+  function setBgm(screen) {
+    if (!enabled || !unlocked) { stopMusic(); return; }
+    if (screen==='silent' || !screen) { stopMusic(); return; }
+    if (screen===active && timer) return;
+    stopMusic(); const p=makePreset(screen); active=screen; step=0;
+    const ctx=getAudio(); if (ctx.state==='suspended') ctx.resume().catch(()=>{});
+    const now=ctx.currentTime; master.gain.cancelScheduledValues(now); master.gain.setTargetAtTime(screen.startsWith('game:')?.52:.72,now,.13);
+    const beat=60000/p.bpm;
+    playNote(p,step++,screen); timer=setInterval(()=>playNote(p,step++,screen),beat);
+  }
+  function unlockBgm() {
+    if (!enabled) return;
+    unlocked=true; const ctx=getAudio(); if (ctx.state==='suspended') ctx.resume().catch(()=>{});
+    setBgm(active || 'main');
+  }
+  document.addEventListener('pointerdown',unlockBgm,{capture:true,once:true});
+  document.addEventListener('keydown',unlockBgm,{capture:true,once:true});
+  const overlay=document.getElementById('overlay');
+  document.addEventListener('click',event=>{
+    const activity=event.target.closest?.('.activity[data-game]');
+    if (!activity) return;
+    const id=activity.dataset.game; overlay.dataset.game=id;
+    if (state.energy>=7) setBgm(id==='soundmemory'?'silent':`game:${id}`);
+  },true);
+  const diaryObserver=new MutationObserver(()=>{
+    const diaryOpen=[...document.querySelectorAll('.diary-overlay')].some(el=>el.classList.contains('show'));
+    const gameOpen=overlay.classList.contains('show');
+    if (diaryOpen) setBgm('diary');
+    else if (gameOpen) {
+      const game=overlay.dataset.game||'';
+      setBgm(game==='soundmemory'?'silent':game==='career'?'ending':`game:${game||'menu'}`);
+    } else setBgm('main');
+  });
+  diaryObserver.observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
+  const careerObserver=new MutationObserver(()=>{ if (overlay.classList.contains('show') && /직업|미래 직업/.test(document.getElementById('gameTitle').textContent)) { overlay.dataset.game='career'; setBgm('ending'); } });
+  careerObserver.observe(document.getElementById('gameTitle'),{childList:true,characterData:true,subtree:true});
+  const toggle=document.createElement('button'); toggle.id='bgmToggle'; toggle.className='iconbtn'; toggle.type='button'; toggle.textContent=enabled?'♫ BGM 켜짐':'♫ BGM 꺼짐'; toggle.setAttribute('aria-pressed',String(enabled)); document.querySelector('.top')?.append(toggle);
+  toggle.onclick=()=>{enabled=!enabled;localStorage.setItem('petitMindBgmEnabled',String(enabled));toggle.textContent=enabled?'♫ BGM 켜짐':'♫ BGM 꺼짐';toggle.setAttribute('aria-pressed',String(enabled));if(enabled){unlocked=true;setBgm(active||'main')}else stopMusic()};
+  window.addEventListener('pagehide',stopMusic);
+})();
+
 /* Final interaction layer: profile selection, ordered unlocks and playable skill games. */
 (() => {
   const profileStoreKey = 'petitMindProfilesV1';
