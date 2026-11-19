@@ -170,9 +170,9 @@
 (() => {
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   if (!AudioCtx) return;
-  let audio = null, master = null, timer = null, step = 0, active = '', unlocked = false;
+  let audio = null, master = null, timer = null, step = 0, active = '', desiredScreen = 'main', unlocked = false;
   let enabled = localStorage.getItem('petitMindBgmEnabled') !== 'false';
-  let volume = Math.min(1,Math.max(0,Number(localStorage.getItem('petitMindBgmVolume') ?? .45)));
+  let volume = Math.min(1,Math.max(0,Number(localStorage.getItem('petitMindBgmVolume') ?? .75)));
   const presets = {
     main: { bpm: 82, wave: 'triangle', scale: [0,3,5,7,10,12,15,17], root: 261.63 },
     diary: { bpm: 66, wave: 'sine', scale: [0,2,5,7,9,12,14,17], root: 220 },
@@ -200,27 +200,32 @@
     const frequency=p.root*Math.pow(2,p.scale[degree]/12)*(index%8===4?.5:1);
     const osc=audio.createOscillator(), gain=audio.createGain(), now=audio.currentTime;
     osc.type=p.wave; osc.frequency.setValueAtTime(frequency,now);
-    gain.gain.setValueAtTime(.0001,now); gain.gain.exponentialRampToValueAtTime(key.startsWith('game:')?.018:.025,now+.035); gain.gain.exponentialRampToValueAtTime(.0001,now+.42);
+    gain.gain.setValueAtTime(.0001,now); gain.gain.exponentialRampToValueAtTime(.14,now+.045); gain.gain.exponentialRampToValueAtTime(.0001,now+.48);
     osc.connect(gain); gain.connect(master); osc.start(now); osc.stop(now+.45);
+    if(index%4===0){const bass=audio.createOscillator(),pad=audio.createGain(),low=p.root*.5; bass.type='sine';bass.frequency.setValueAtTime(low,now);pad.gain.setValueAtTime(.0001,now);pad.gain.exponentialRampToValueAtTime(.055,now+.08);pad.gain.exponentialRampToValueAtTime(.0001,now+1.1);bass.connect(pad);pad.connect(master);bass.start(now);bass.stop(now+1.12)}
   }
   function setBgm(screen) {
+    desiredScreen=screen||'silent';
     if (!enabled || !unlocked) { stopMusic(); return; }
     if (screen==='silent' || !screen) { stopMusic(); return; }
-    if (screen===active && timer) { const now=audio.currentTime; master.gain.cancelScheduledValues(now); master.gain.setTargetAtTime((screen.startsWith('game:')?.52:.72)*volume,now,.08); return; }
+    if (screen===active && timer) { const now=audio.currentTime; master.gain.cancelScheduledValues(now); master.gain.setTargetAtTime((screen.startsWith('game:')?.9:1)*volume,now,.08); return; }
     stopMusic(); const p=makePreset(screen); active=screen; step=0;
-    const ctx=getAudio(); if (ctx.state==='suspended') ctx.resume().catch(()=>{});
-    const now=ctx.currentTime; master.gain.cancelScheduledValues(now); master.gain.setTargetAtTime((screen.startsWith('game:')?.52:.72)*volume,now,.13);
+    const ctx=getAudio();
+    const now=ctx.currentTime; master.gain.cancelScheduledValues(now); master.gain.setTargetAtTime((screen.startsWith('game:')?.9:1)*volume,now,.13);
     const beat=60000/p.bpm;
-    playNote(p,step++,screen); timer=setInterval(()=>playNote(p,step++,screen),beat);
+    const firstNote=()=>{if(active===screen&&enabled&&unlocked)playNote(p,step++,screen)};
+    if(ctx.state==='running')firstNote();else ctx.resume().then(firstNote).catch(()=>{});
+    timer=setInterval(()=>playNote(p,step++,screen),beat);
   }
   function unlockBgm() {
     if (!enabled) return;
-    unlocked=true; const ctx=getAudio(); if (ctx.state==='suspended') ctx.resume().catch(()=>{});
-    setBgm(active || 'main');
+    unlocked=true; const ctx=getAudio();
+    if(ctx.state==='suspended')ctx.resume().then(()=>setBgm(desiredScreen)).catch(()=>{});else setBgm(desiredScreen);
   }
   window.pmBgmSettings={get enabled(){return enabled},get volume(){return volume},setEnabled(value){enabled=!!value;localStorage.setItem('petitMindBgmEnabled',String(enabled));if(enabled){unlocked=true;setBgm(active||'main')}else stopMusic();return enabled},setVolume(value){volume=Math.min(1,Math.max(0,Number(value)||0));localStorage.setItem('petitMindBgmVolume',String(volume));if(active&&enabled&&unlocked)setBgm(active);return volume}};
-  document.addEventListener('pointerdown',unlockBgm,{capture:true,once:true});
-  document.addEventListener('keydown',unlockBgm,{capture:true,once:true});
+  document.addEventListener('pointerdown',unlockBgm,{capture:true});
+  document.addEventListener('keydown',unlockBgm,{capture:true});
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&unlocked)unlockBgm()});
   const overlay=document.getElementById('overlay');
   document.addEventListener('click',event=>{
     const activity=event.target.closest?.('.activity[data-game]');
