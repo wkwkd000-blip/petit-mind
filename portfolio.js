@@ -64,7 +64,7 @@
       if (!AC) { document.getElementById('soundPrompt').textContent = '이 브라우저에서는 소리를 재생할 수 없어요. 기억 순서 게임으로 진행해요.'; return priorStartGame('memory'); }
       const ctx = new AC(), freqs = [261.63, 329.63, 392, 440], sequence = Array.from({ length: 3 }, () => Math.floor(Math.random() * 4));
       let index = 0, playing = false;
-      const play = async (tone, delay = 0) => { await ctx.resume(); setTimeout(() => { const osc = ctx.createOscillator(), gain = ctx.createGain(); osc.frequency.value = freqs[tone]; osc.type = 'sine'; gain.gain.setValueAtTime(.001, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(.18, ctx.currentTime + .025); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + .32); osc.connect(gain).connect(ctx.destination); osc.start(); osc.stop(ctx.currentTime + .34); }, delay); };
+      const play = async (tone, delay = 0) => { await ctx.resume(); setTimeout(() => { const osc = ctx.createOscillator(), gain = ctx.createGain(), volume = window.pmBgmSettings?.volume ?? .45; osc.frequency.value = freqs[tone]; osc.type = 'sine'; gain.gain.setValueAtTime(.001, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(Math.max(.0001,.18*volume), ctx.currentTime + .025); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + .32); osc.connect(gain).connect(ctx.destination); osc.start(); osc.stop(ctx.currentTime + .34); }, delay); };
       const showSequence = () => { if (playing) return; playing = true; document.getElementById('soundPrompt').textContent = '귀 기울여 들어요'; sequence.forEach((tone, i) => play(tone, i * 520)); setTimeout(() => { playing = false; document.getElementById('soundPrompt').textContent = '이제 같은 순서로 음을 눌러요'; }, sequence.length * 520 + 360); };
       document.getElementById('replayTone').onclick = showSequence;
       area.querySelectorAll('.tone').forEach(button => button.onclick = () => {
@@ -172,6 +172,7 @@
   if (!AudioCtx) return;
   let audio = null, master = null, timer = null, step = 0, active = '', unlocked = false;
   let enabled = localStorage.getItem('petitMindBgmEnabled') !== 'false';
+  let volume = Math.min(1,Math.max(0,Number(localStorage.getItem('petitMindBgmVolume') ?? .45)));
   const presets = {
     main: { bpm: 82, wave: 'triangle', scale: [0,3,5,7,10,12,15,17], root: 261.63 },
     diary: { bpm: 66, wave: 'sine', scale: [0,2,5,7,9,12,14,17], root: 220 },
@@ -205,10 +206,10 @@
   function setBgm(screen) {
     if (!enabled || !unlocked) { stopMusic(); return; }
     if (screen==='silent' || !screen) { stopMusic(); return; }
-    if (screen===active && timer) return;
+    if (screen===active && timer) { const now=audio.currentTime; master.gain.cancelScheduledValues(now); master.gain.setTargetAtTime((screen.startsWith('game:')?.52:.72)*volume,now,.08); return; }
     stopMusic(); const p=makePreset(screen); active=screen; step=0;
     const ctx=getAudio(); if (ctx.state==='suspended') ctx.resume().catch(()=>{});
-    const now=ctx.currentTime; master.gain.cancelScheduledValues(now); master.gain.setTargetAtTime(screen.startsWith('game:')?.52:.72,now,.13);
+    const now=ctx.currentTime; master.gain.cancelScheduledValues(now); master.gain.setTargetAtTime((screen.startsWith('game:')?.52:.72)*volume,now,.13);
     const beat=60000/p.bpm;
     playNote(p,step++,screen); timer=setInterval(()=>playNote(p,step++,screen),beat);
   }
@@ -217,6 +218,7 @@
     unlocked=true; const ctx=getAudio(); if (ctx.state==='suspended') ctx.resume().catch(()=>{});
     setBgm(active || 'main');
   }
+  window.pmBgmSettings={get enabled(){return enabled},get volume(){return volume},setEnabled(value){enabled=!!value;localStorage.setItem('petitMindBgmEnabled',String(enabled));if(enabled){unlocked=true;setBgm(active||'main')}else stopMusic();return enabled},setVolume(value){volume=Math.min(1,Math.max(0,Number(value)||0));localStorage.setItem('petitMindBgmVolume',String(volume));if(active&&enabled&&unlocked)setBgm(active);return volume}};
   document.addEventListener('pointerdown',unlockBgm,{capture:true,once:true});
   document.addEventListener('keydown',unlockBgm,{capture:true,once:true});
   const overlay=document.getElementById('overlay');
@@ -238,14 +240,14 @@
   diaryObserver.observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
   const careerObserver=new MutationObserver(()=>{ if (overlay.classList.contains('show') && /직업|미래 직업/.test(document.getElementById('gameTitle').textContent)) { overlay.dataset.game='career'; setBgm('ending'); } });
   careerObserver.observe(document.getElementById('gameTitle'),{childList:true,characterData:true,subtree:true});
-  const toggle=document.createElement('button'); toggle.id='bgmToggle'; toggle.className='iconbtn'; toggle.type='button'; toggle.textContent=enabled?'♫ BGM 켜짐':'♫ BGM 꺼짐'; toggle.setAttribute('aria-pressed',String(enabled)); document.querySelector('.top')?.append(toggle);
-  toggle.onclick=()=>{enabled=!enabled;localStorage.setItem('petitMindBgmEnabled',String(enabled));toggle.textContent=enabled?'♫ BGM 켜짐':'♫ BGM 꺼짐';toggle.setAttribute('aria-pressed',String(enabled));if(enabled){unlocked=true;setBgm(active||'main')}else stopMusic()};
+  const settingsButton=document.getElementById('rename'); if(settingsButton){settingsButton.textContent='⚙ 설정';settingsButton.setAttribute('aria-label','설정');}
   window.addEventListener('pagehide',stopMusic);
 })();
 
 /* Final interaction layer: profile selection, ordered unlocks and playable skill games. */
 (() => {
   const profileStoreKey = 'petitMindProfilesV1';
+  window.pmMouseSensitivity = Math.min(2.5,Math.max(.25,Number(localStorage.getItem('petitMindMouseSensitivity') || 1)));
   const readProfiles = () => { try { return JSON.parse(localStorage.getItem(profileStoreKey) || '{}'); } catch { return {}; } };
   let profiles = readProfiles(), activeProfile = null, activePlayerName = '', profileCloud = null, profileCloudUser = null;
   const baseSaveForProfile = saveV2;
@@ -323,14 +325,6 @@
     saveV2(); document.querySelector('.app').style.display=''; document.getElementById('overlay').classList.remove('show'); document.getElementById('endingScreen')?.classList.remove('show'); document.getElementById('deathScreen')?.classList.remove('show'); setupPet();
   };
 
-  // Robust rename modal; bind in capture phase because earlier inline scripts replace onclick.
-  document.getElementById('rename')?.addEventListener('click', e => {
-    e.preventDefault(); e.stopImmediatePropagation();
-    let page = document.getElementById('nameScreen');
-    if (!page) { pmOpenNameScreen(); page = document.getElementById('nameScreen'); }
-    const input = page.querySelector('#petNameInput'); input.value = state.name || ''; page.classList.add('show'); input.focus(); input.select();
-  }, true);
-
   const storyPacks = {
     mediate:[
       ['두 친구가 같은 공을 쓰고 싶어 해요.',['각자 원하는 시간을 말하고 순서를 정하자','한 친구에게 양보하라고 해','공을 숨겨서 다툼을 끝내']],
@@ -394,7 +388,7 @@
     if (id === 'balance') {
       const game=openActivity(id); if(!game)return; const area=document.getElementById('gameArea'); area.innerHTML='<p>← → 또는 마우스로 판을 기울여 공을 가운데에 3초 유지해요.</p><canvas id="balanceCanvas" width="420" height="210"></canvas><p id="balanceStatus">중앙에 공을 모아 보세요</p>';
       const c=area.querySelector('canvas'),ctx=c.getContext('2d'),status=area.querySelector('#balanceStatus'); let x=210,y=80,vx=0,vy=0,tilt=0,centered=0,last=performance.now(),done=false;
-      const end=ok=>{if(done)return;done=true;finishChoice(game,ok,ok?'균형을 유지했어요!':'공이 판 밖으로 나갔어요. 다음에 다시 도전해요.')}; c.onpointermove=e=>{const r=c.getBoundingClientRect();tilt=((e.clientX-r.left)/r.width-.5)*2}; window.addEventListener('keydown',function key(e){if(done)return;if(['ArrowLeft','a','A'].includes(e.key))tilt=-1;if(['ArrowRight','d','D'].includes(e.key))tilt=1}); const frame=now=>{if(done)return;let dt=Math.min(.04,(now-last)/1000);last=now;vx+=tilt*130*dt;vx*=.985;vy+=45*dt; x+=vx*dt;y+=vy*dt;if(y>150){vy=-vy*.8;y=150}if(y<55){y=55;vy=Math.abs(vy)}centered=Math.abs(x-210)<24?centered+dt:0;ctx.clearRect(0,0,420,210);ctx.fillStyle='#324764';ctx.fillRect(35,60,350,110);ctx.strokeStyle='#f3d17b';ctx.lineWidth=4;ctx.strokeRect(35,60,350,110);ctx.fillStyle='#9bca91';ctx.fillRect(190,65,40,100);ctx.fillStyle='#ffd46f';ctx.beginPath();ctx.arc(x,y,10,0,Math.PI*2);ctx.fill();status.textContent=centered>=3?'중앙을 지켰어요!':`가운데까지 ${Math.max(0,3-centered).toFixed(1)}초`;if(centered>=3)end(true);else if(x<40||x>380)end(false);else requestAnimationFrame(frame)};requestAnimationFrame(frame);return;
+      const end=ok=>{if(done)return;done=true;finishChoice(game,ok,ok?'균형을 유지했어요!':'공이 판 밖으로 나갔어요. 다음에 다시 도전해요.')}; c.onpointermove=e=>{const r=c.getBoundingClientRect(),sensitivity=window.pmMouseSensitivity||1;tilt=Math.max(-1,Math.min(1,((e.clientX-r.left)/r.width-.5)*2*sensitivity))}; window.addEventListener('keydown',function key(e){if(done)return;if(['ArrowLeft','a','A'].includes(e.key))tilt=-1;if(['ArrowRight','d','D'].includes(e.key))tilt=1}); const frame=now=>{if(done)return;let dt=Math.min(.04,(now-last)/1000);last=now;vx+=tilt*130*dt;vx*=.985;vy+=45*dt; x+=vx*dt;y+=vy*dt;if(y>150){vy=-vy*.8;y=150}if(y<55){y=55;vy=Math.abs(vy)}centered=Math.abs(x-210)<24?centered+dt:0;ctx.clearRect(0,0,420,210);ctx.fillStyle='#324764';ctx.fillRect(35,60,350,110);ctx.strokeStyle='#f3d17b';ctx.lineWidth=4;ctx.strokeRect(35,60,350,110);ctx.fillStyle='#9bca91';ctx.fillRect(190,65,40,100);ctx.fillStyle='#ffd46f';ctx.beginPath();ctx.arc(x,y,10,0,Math.PI*2);ctx.fill();status.textContent=centered>=3?'중앙을 지켰어요!':`가운데까지 ${Math.max(0,3-centered).toFixed(1)}초`;if(centered>=3)end(true);else if(x<40||x>380)end(false);else requestAnimationFrame(frame)};requestAnimationFrame(frame);return;
     }
     if (id === 'reaction') {
       const game=openActivity(id); if(!game)return; const area=document.getElementById('gameArea'); area.innerHTML='<p id="reactionText">검정/빨강일 때는 기다려요. 초록색이 되면 바로 클릭!</p><button id="reactionPad" class="reaction-pad">기다려요</button><p id="reactionCount">초록 신호를 놓치지 마세요</p>'; const pad=area.querySelector('#reactionPad'),label=area.querySelector('#reactionCount');let pulse=0,done=false,timer;const schedule=()=>{pad.classList.remove('green');pad.textContent=pulse%2?'🔴 기다려요':'⚫ 기다려요';timer=setTimeout(()=>{if(done)return;pulse++;pad.classList.add('green');pad.textContent='🟢 지금!';label.textContent='초록색일 때 클릭!';timer=setTimeout(()=>{pad.classList.remove('green');pad.textContent='놓쳤어요 · 다시 기다려요';label.textContent='3~5초 뒤 다시 초록색이 와요';if(pulse>=3){done=true;finishChoice(game,false,'신호를 놓쳤어요. 반응 연습을 완료했어요.')}else schedule()},320)} ,2200+Math.random()*2800)};pad.onclick=()=>{if(done)return;if(pad.classList.contains('green')){done=true;clearTimeout(timer);finishChoice(game,true,'초록 신호에 빠르게 반응했어요!')}else{label.textContent='아직 기다릴 때예요. 초록색 신호를 기다려요.'}};schedule();return;
@@ -431,4 +425,38 @@
 
   // Save id/name and current pet independently; changing the pet resets only its active progress.
   if (activeProfile && state) { state.playerId=activeProfile; state.playerName=activePlayerName; }
+  window.pmUpdateSettingsProfile = function (profileId, playerName, petName, species) {
+    const id=String(profileId||'').trim().toLocaleLowerCase(), user=String(playerName||'').trim(), name=String(petName||'').trim().slice(0,12);
+    if(!id||!user||!name||!petChoices.some(x=>x[0]===species)) return {ok:false,message:'아이디, 이름, 쁘띠 이름과 스킨을 모두 입력해 주세요.'};
+    if(id!==activeProfile&&profiles[id]) return {ok:false,message:'이미 사용 중인 아이디예요. 다른 아이디를 입력해 주세요.'};
+    activeProfile=id;activePlayerName=user;state.playerId=id;state.playerName=user;state.name=name;state.species=species;state.kind=petChoices.find(x=>x[0]===species)?.[1]||'쁘띠';
+    saveV2();drawV2();refreshPixelScene();pmRefreshHud();
+    return {ok:true};
+  };
+})();
+
+(() => {
+  const settings=document.createElement('section');settings.id='settingsScreen';settings.className='settings-overlay';
+  settings.innerHTML='<div class="settings-card"><div class="settings-header"><h2>게임 설정</h2><button type="button" class="diary-close" id="settingsClose">닫기 ✕</button></div><form id="settingsForm"><label class="setting-range">소리 크기 <output id="volumeValue"></output><input id="volumeSetting" type="range" min="0" max="100" step="1"></label><label class="setting-toggle"><span>BGM</span><input id="bgmSetting" type="checkbox"><b>BGM 켜짐</b></label><label class="setting-range">마우스 감도 <output id="sensitivityValue"></output><input id="sensitivitySetting" type="range" min="25" max="250" step="5"></label><hr><label>사용자 아이디<input id="settingPlayerId" maxlength="32" required></label><label>사용자 이름<input id="settingPlayerName" maxlength="20" required></label><label>쁘띠 이름<input id="settingPetName" maxlength="12" required></label><label>쁘띠 스킨<select id="settingSpecies"></select></label><div class="settings-actions"><button type="button" class="diary-close" id="settingsCancel">취소</button><button class="title-btn" type="submit">변경 저장</button></div></form></div>';
+  document.body.append(settings);
+  const speciesSelect=settings.querySelector('#settingSpecies');
+  speciesSelect.innerHTML=petChoices.map(([icon,label])=>`<option value="${icon}">${icon} ${label}</option>`).join('');
+  const inputs={volume:settings.querySelector('#volumeSetting'),volumeText:settings.querySelector('#volumeValue'),bgm:settings.querySelector('#bgmSetting'),sensitivity:settings.querySelector('#sensitivitySetting'),sensitivityText:settings.querySelector('#sensitivityValue')};
+  let snapshot=null;
+  const updateValues=()=>{inputs.volumeText.value=inputs.volume.value+'%';inputs.sensitivityText.value=(Number(inputs.sensitivity.value)/100).toFixed(2)+'×';settings.querySelector('.setting-toggle b').textContent=inputs.bgm.checked?'BGM 켜짐':'BGM 꺼짐'};
+  function open(){
+    const audio=window.pmBgmSettings;
+    snapshot={volume:audio?.volume??Number(localStorage.getItem('petitMindBgmVolume')||.45),enabled:audio?.enabled??localStorage.getItem('petitMindBgmEnabled')!=='false',sensitivity:window.pmMouseSensitivity||1};
+    inputs.volume.value=Math.round(snapshot.volume*100);inputs.bgm.checked=snapshot.enabled;inputs.sensitivity.value=Math.round(snapshot.sensitivity*100);
+    settings.querySelector('#settingPlayerId').value=state.playerId||localStorage.getItem('petitMindActiveProfile')||'';
+    settings.querySelector('#settingPlayerName').value=state.playerName||'';settings.querySelector('#settingPetName').value=state.name||'';speciesSelect.value=state.species||petChoices[0][0];updateValues();settings.classList.add('show');
+  }
+  function close(restore){if(restore&&snapshot){window.pmBgmSettings?.setVolume(snapshot.volume);window.pmBgmSettings?.setEnabled(snapshot.enabled);localStorage.setItem('petitMindBgmVolume',String(snapshot.volume));localStorage.setItem('petitMindBgmEnabled',String(snapshot.enabled));window.pmMouseSensitivity=snapshot.sensitivity;localStorage.setItem('petitMindMouseSensitivity',String(snapshot.sensitivity))}settings.classList.remove('show')}
+  inputs.volume.oninput=()=>{updateValues();const v=Number(inputs.volume.value)/100;localStorage.setItem('petitMindBgmVolume',String(v));window.pmBgmSettings?.setVolume(v)};
+  inputs.bgm.onchange=()=>{updateValues();localStorage.setItem('petitMindBgmEnabled',String(inputs.bgm.checked));window.pmBgmSettings?.setEnabled(inputs.bgm.checked)};
+  inputs.sensitivity.oninput=()=>{window.pmMouseSensitivity=Number(inputs.sensitivity.value)/100;localStorage.setItem('petitMindMouseSensitivity',String(window.pmMouseSensitivity));updateValues()};
+  settings.querySelector('#settingsClose').onclick=()=>close(true);settings.querySelector('#settingsCancel').onclick=()=>close(true);settings.onclick=e=>{if(e.target===settings)close(true)};
+  settings.querySelector('#settingsForm').onsubmit=e=>{e.preventDefault();const result=window.pmUpdateSettingsProfile(settings.querySelector('#settingPlayerId').value,settings.querySelector('#settingPlayerName').value,settings.querySelector('#settingPetName').value,speciesSelect.value);if(!result.ok){toast(result.message);return}localStorage.setItem('petitMindActiveProfile',String(settings.querySelector('#settingPlayerId').value).trim().toLocaleLowerCase());close(false);toast('설정을 저장했어요.')};
+  document.getElementById('rename')?.addEventListener('click',e=>{e.preventDefault();e.stopImmediatePropagation();open()},true);
+  document.head.insertAdjacentHTML('beforeend','<style>.settings-overlay{position:fixed;inset:0;z-index:100;display:none;place-items:center;padding:18px;background:#080d1be8;color:#ffedc5}.settings-overlay.show{display:grid}.settings-card{width:min(560px,100%);max-height:92vh;overflow:auto;padding:22px;border:5px solid #f0d27e;box-shadow:7px 7px #080d18,0 0 0 4px #465e7d;background:linear-gradient(#293c5b,#18253d)}.settings-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}.settings-header h2{margin:0;font:13px \'Press Start 2P\',Consolas,monospace;color:#ffdc75;line-height:1.8}.settings-card form{display:grid;gap:12px}.settings-card form>label{display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center;font-size:13px;color:#e3e8d8}.settings-card input:not([type=range]):not([type=checkbox]),.settings-card select{grid-column:1/-1;width:100%;padding:9px;border:2px solid #91b2bb;background:#fff2ce;color:#26364d}.settings-card input[type=range]{grid-column:1/-1;width:100%;accent-color:#e6c568}.settings-card output{color:#ffdc75}.setting-toggle{display:flex!important;align-items:center;gap:10px}.setting-toggle span{margin-right:auto}.setting-toggle input{width:18px;height:18px;accent-color:#86c7b4}.settings-card hr{width:100%;border:0;border-top:2px dashed #7897af;margin:4px 0}.settings-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:8px}.settings-actions .title-btn{padding:10px 14px}@media(max-width:520px){.settings-card{padding:16px}.settings-header h2{font-size:10px}}</style>');
 })();
